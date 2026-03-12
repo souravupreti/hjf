@@ -24,7 +24,6 @@ def run_rank_tracker(search_engines, search_phrases, target_domain):
     print(f"Starting tracking for {target_domain}...")
     chrome_options = Options()
     
-    # Check if we are running in a Docker container (Environment variable check)
     is_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER') == 'true'
     
     if is_docker:
@@ -32,7 +31,7 @@ def run_rank_tracker(search_engines, search_phrases, target_domain):
         chrome_options.add_argument("--headless=new")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.binary_location = "/usr/bin/google-chrome"
+        # Let Selenium 4 find the system chrome/driver automatically
     else:
         print("Running Locally - Using Headed Mode")
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -41,7 +40,8 @@ def run_rank_tracker(search_engines, search_phrases, target_domain):
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+    # Use Selenium 4's built-in manager (no need for ChromeDriverManager)
+    driver = webdriver.Chrome(options=chrome_options)
     
     # Normalize target domain
     characters_to_clear = ["http://", "https://", "www."]
