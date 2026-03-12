@@ -22,6 +22,10 @@ class TrackRequest(BaseModel):
     phrases: List[str]
     domain: str
 
+@app.get("/")
+async def root():
+    return {"message": "Rank Tracker API is running"}
+
 @app.post("/track")
 async def track_ranks(request: TrackRequest):
     print(f"Received track request for domain: {request.domain}")
