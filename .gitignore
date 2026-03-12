@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.DS_Store
+.env
+*.local
+downloads/
+__pycache__/
+*.pyc
+.venv/
+results_*.csv
+debug_*.html
