@@ -89,10 +89,10 @@ def run_rank_tracker(search_engines, search_phrases, requestedSearchDomain):
                         # Find all headers - these represent unique organic results
                         headers = driver.find_elements(By.TAG_NAME, header_selector)
                         
+                        last_domain = None
                         for header in headers:
                             try:
-                                # Get the nearest link to this header
-                                # We look for 'a' either in the header or in its parent/ancestor
+                                # Get the nearest link
                                 link_element = None
                                 try:
                                     link_element = header.find_element(By.XPATH, "./ancestor::a")
@@ -100,19 +100,29 @@ def run_rank_tracker(search_engines, search_phrases, requestedSearchDomain):
                                     try:
                                         link_element = header.find_element(By.XPATH, ".//a")
                                     except:
-                                        # Fallback to parent's first link
                                         try:
                                             link_element = header.find_element(By.XPATH, "..//a")
-                                        except:
-                                            continue
+                                        except: continue
                                 
                                 if not link_element: continue
                                 
                                 href = link_element.get_attribute("href")
-                                if not href or any(x in href for x in ["google.com", "bing.com", "search?", "cache:", "translate.google"]):
+                                if not href or any(x in href for x in ["google.com", "bing.com", "search?", "cache:", "translate.google", "youtube.com/search"]):
                                     continue
                                 
                                 link_domain = normalize_domain(href)
+                                
+                                # DEDUPLICATION: If it's the same domain as the previous result (indented results), don't increase the rank
+                                if link_domain == last_domain:
+                                    # Still check if it's our target
+                                    if requestedSearchDomain in link_domain:
+                                        # Use the first rank we found for this domain
+                                        engine_results.append({"phrase": searchPhrase, "rank": current_rank - 1})
+                                        found = True
+                                        break
+                                    continue
+                                
+                                last_domain = link_domain
                                 print(f"  Rank {current_rank}: {link_domain}")
 
                                 if requestedSearchDomain in link_domain:
