@@ -10,6 +10,13 @@ import csv
 import time
 import os
 
+# Re-adding webdriver_manager for your local compatibility
+try:
+    from webdriver_manager.chrome import ChromeDriverManager
+    HAS_WDM = True
+except ImportError:
+    HAS_WDM = False
+
 def normalize_domain(url):
     try:
         netloc = urlparse(url).netloc.lower()
@@ -19,10 +26,22 @@ def normalize_domain(url):
     except Exception:
         return url.lower()
 
-def run_rank_tracker(search_engines, search_phrases, target_domain):
-    print(f"Starting tracking for {target_domain}...")
+def search_internal(driver, url, searchPhrase):
+    driver.get(url)
+    try:
+        # Wait for either "q" (standard) or "p" (sometimes used)
+        entryField = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.NAME, "q"))
+        )
+        entryField.clear()
+        entryField.send_keys(searchPhrase)
+        entryField.send_keys(Keys.RETURN)
+    except Exception as e:
+        print(f"Error finding search field on {url}: {e}")
+        raise
+
+def run_rank_tracker(search_engines, search_phrases, requestedSearchDomain):
     chrome_options = Options()
-    
     is_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER') == 'true'
     
     if is_docker:
@@ -34,98 +53,101 @@ def run_rank_tracker(search_engines, search_phrases, target_domain):
         service = Service(executable_path="/usr/bin/chromedriver")
         driver = webdriver.Chrome(service=service, options=chrome_options)
     else:
-        print("Running Locally - Using Headed Mode")
+        print("Running Locally - Matches your original script")
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
-        # On local Windows, we let Selenium 4 find/download the driver automatically
-        driver = webdriver.Chrome(options=chrome_options)
-    
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    
-    # Normalize target domain
-    characters_to_clear = ["http://", "https://", "www."]
-    for character in characters_to_clear:
-        target_domain = target_domain.replace(character, "")
-    target_domain = target_domain.lower().strip()
+        # Avoid detection
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        if HAS_WDM:
+            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+        else:
+            driver = webdriver.Chrome(options=chrome_options)
+
+    # Normalize domain exactly like your script
+    charactersToBeCleared = ["http://", "https://", "www."]
+    for character in charactersToBeCleared:
+        requestedSearchDomain = requestedSearchDomain.replace(character, "")
+    requestedSearchDomain = requestedSearchDomain.lower().strip()
 
     results = {}
     
     try:
-        for engine in search_engines:
-            engine_key = engine.lower().strip()
-            print(f"Engine: {engine_key}")
+        for searchEngine in search_engines:
+            engine_key = searchEngine.lower().strip()
             engine_results = []
             
-            for phrase in search_phrases:
-                phrase = phrase.strip()
-                print(f"  Searching: {phrase}")
+            for searchPhrase in search_phrases:
+                searchPhrase = searchPhrase.strip()
+                if not searchPhrase: continue
+                
+                print(f"Tracking '{searchPhrase}' on {engine_key}...")
                 
                 if engine_key == 'google':
-                    driver.get("https://www.google.com")
-                    selector = "div.yuRUbf a"
+                    search_internal(driver, "https://www.google.com", searchPhrase)
+                    selector = "div.yuRUbf a, div.kvH9C a, div.g a" # Multi-selector for better catch
                 elif engine_key == 'bing':
-                    driver.get("https://www.bing.com")
+                    search_internal(driver, "https://www.bing.com", searchPhrase)
                     selector = "li.b_algo h2 a"
                 elif engine_key == 'duckduckgo':
-                    driver.get("https://duckduckgo.com")
+                    search_internal(driver, "https://duckduckgo.com", searchPhrase)
                     selector = "a[data-testid='result-title-a']"
                 else:
                     continue
 
                 try:
-                    entry_field = WebDriverWait(driver, 10).until(
-                        EC.presence_of_element_located((By.NAME, "q"))
-                    )
-                    entry_field.clear()
-                    entry_field.send_keys(phrase)
-                    entry_field.send_keys(Keys.RETURN)
-                    
-                    # Wait for results
+                    # Wait for results to load
                     WebDriverWait(driver, 15).until(
                         EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                     )
                     links = driver.find_elements(By.CSS_SELECTOR, selector)
-                    
-                    rank = 1
-                    found = False
-                    for link in links:
+                except Exception as e:
+                    print(f"Timeout waiting for results for '{searchPhrase}' on {engine_key}")
+                    engine_results.append({"phrase": searchPhrase, "rank": "not found"})
+                    continue
+
+                rank = 1
+                found = False
+                for link in links:
+                    try:
                         href = link.get_attribute("href")
                         if not href: continue
+                        
                         link_domain = normalize_domain(href)
-                        if target_domain in link_domain:
-                            engine_results.append({"phrase": phrase, "rank": rank})
+                        if requestedSearchDomain in link_domain:
+                            engine_results.append({"phrase": searchPhrase, "rank": rank})
                             found = True
+                            print(f"  Found at rank {rank}!")
                             break
                         rank += 1
+                        if rank > 50: break # Depth limit
+                    except:
+                        continue
 
-                    if not found:
-                        engine_results.append({"phrase": phrase, "rank": "not found"})
-                        
-                except Exception as e:
-                    print(f"    Error processing phrase {phrase}: {e}")
-                    engine_results.append({"phrase": phrase, "rank": "not found"})
-                
-                time.sleep(1.5) # Gentle delay
+                if not found:
+                    engine_results.append({"phrase": searchPhrase, "rank": "not found"})
             
-            results[engine] = engine_results
+            # Map engine names back to their original display names
+            display_name = engine_key.capitalize()
+            if engine_key == 'duckduckgo': display_name = "DuckDuckGo"
+            results[display_name] = engine_results
 
-        # Save to CSV
+        # CSV Saving logic
         timestamp = int(time.time())
         file_name = f"results_{timestamp}.csv"
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        downloads_dir = os.path.join(base_dir, "downloads")
+        # Use a path that works in both Local and Docker
+        downloads_dir = os.path.join(os.getcwd(), "downloads")
         os.makedirs(downloads_dir, exist_ok=True)
         file_path = os.path.join(downloads_dir, file_name)
         
-        with open(file_path, 'w', newline='') as file:
+        with open(file_path, 'w', newline='', encoding='utf-8') as file:
             writer = csv.writer(file)
-            for engine, engine_results_list in results.items():
-                writer.writerow([engine])
-                for res in engine_results_list:
+            for engine, engine_data in results.items():
+                writer.writerow([f"Search Engine: {engine}"])
+                writer.writerow(["Keyword", "Rank"])
+                for res in engine_data:
                     writer.writerow([res['phrase'], res['rank']])
+                writer.writerow([]) # Spacer
         
-        print(f"Results saved to {file_path}")
         return results, file_name
 
     finally:
