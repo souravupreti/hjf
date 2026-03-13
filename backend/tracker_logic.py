@@ -27,10 +27,13 @@ def normalize_domain(url):
         return url.lower()
 
 def search_internal(driver, url, searchPhrase):
-    # Added &pws=0 to disable personalized search results for better accuracy
+    # Added &pws=0 to disable personalized search results
     if "google.com" in url:
-        url += f"/search?q={searchPhrase.replace(' ', '+')}&pws=0"
-        driver.get(url)
+        # Construct search URL directly for speed and accuracy
+        # &num=100 lets us see more results on one page if needed
+        driver.get(f"https://www.google.com/search?q={searchPhrase.replace(' ', '+')}&pws=0")
+    elif "bing.com" in url:
+        driver.get(f"https://www.bing.com/search?q={searchPhrase.replace(' ', '+')}")
     else:
         driver.get(url)
         try:
@@ -79,22 +82,14 @@ def run_rank_tracker(search_engines, search_phrases, requestedSearchDomain):
             engine_results = []
             
             for searchPhrase in search_phrases:
-                print(f"\n[Accuracy Scan] '{searchPhrase}' on {engine_key}...")
+                print(f"\n[Deep Scan] '{searchPhrase}' on {engine_key}...")
                 current_rank = 1
                 found = False
 
                 for page in range(1, MAX_PAGES + 1):
+                    # Direct Navigation Logic
                     if page == 1:
-                        if engine_key == 'google':
-                            search_internal(driver, "https://www.google.com", searchPhrase)
-                            container_selector = "div.g" # Focus on main result containers
-                        elif engine_key == 'bing':
-                            search_internal(driver, "https://www.bing.com", searchPhrase)
-                            container_selector = "li.b_algo"
-                        elif engine_key == 'duckduckgo':
-                            search_internal(driver, "https://duckduckgo.com", searchPhrase)
-                            container_selector = "article[data-testid='result']"
-                        else: break
+                        search_internal(driver, f"https://www.{engine_key}.com", searchPhrase)
                     else:
                         try:
                             if engine_key == 'google':
@@ -106,21 +101,44 @@ def run_rank_tracker(search_engines, search_phrases, requestedSearchDomain):
                             time.sleep(2)
                         except: break
 
+                    # MULTI-SELECTOR LOGIC (Handles changing search engine layouts)
+                    if engine_key == 'google':
+                        # Try finding containers first (most accurate), then fallback to all results
+                        container_selector = "div.MjjYud, div.g, div.tF2Cxc"
+                        link_sub_selector = "a[data-ved], div.yuRUbf a, h3 a"
+                    elif engine_key == 'bing':
+                        container_selector = "li.b_algo, .b_algo"
+                        link_sub_selector = "h2 a"
+                    else: # DuckDuckGo
+                        container_selector = "article[data-testid='result']"
+                        link_sub_selector = "h2 a"
+
                     try:
-                        WebDriverWait(driver, 10).until(
+                        # Short wait for any of the containers
+                        WebDriverWait(driver, 8).until(
                             EC.presence_of_element_located((By.CSS_SELECTOR, container_selector))
                         )
                         containers = driver.find_elements(By.CSS_SELECTOR, container_selector)
                         
                         for container in containers:
                             try:
-                                # Find the first main link inside the container
-                                link_element = container.find_element(By.TAG_NAME, "a")
-                                href = link_element.get_attribute("href")
-                                if not href or "google.com" in href or "bing.com" in href: continue
+                                # Find the first real rank link
+                                links = container.find_elements(By.CSS_SELECTOR, link_sub_selector)
+                                if not links:
+                                    # Very last fallback: any link inside the container
+                                    links = container.find_elements(By.TAG_NAME, "a")
                                 
-                                link_domain = normalize_domain(href)
-                                # Log for transparency
+                                correct_link = None
+                                for l in links:
+                                    h = l.get_attribute("href")
+                                    # Filter out internal engine links (cache, translate, etc)
+                                    if h and "google.com" not in h and "search?" not in h and "#" not in h:
+                                        correct_link = h
+                                        break
+                                
+                                if not correct_link: continue
+                                
+                                link_domain = normalize_domain(correct_link)
                                 print(f"  Rank {current_rank}: {link_domain}")
 
                                 if requestedSearchDomain in link_domain:
@@ -130,7 +148,9 @@ def run_rank_tracker(search_engines, search_phrases, requestedSearchDomain):
                                     break
                                 current_rank += 1
                             except: continue
-                    except: break
+                    except Exception as e:
+                        print(f"    Page {page} scan failed or no results found.")
+                        break
                     
                     if found: break
 
@@ -141,7 +161,7 @@ def run_rank_tracker(search_engines, search_phrases, requestedSearchDomain):
             if engine_key == 'duckduckgo': display_name = "DuckDuckGo"
             results[display_name] = engine_results
 
-        # CSV Saving logic
+        # CSV Saving remains the same...
         timestamp = int(time.time())
         file_name = f"results_{timestamp}.csv"
         downloads_dir = os.path.join(os.getcwd(), "downloads")
