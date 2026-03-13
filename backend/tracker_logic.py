@@ -26,27 +26,6 @@ def normalize_domain(url):
     except Exception:
         return url.lower()
 
-def search_internal(driver, url, searchPhrase):
-    # Added &pws=0 to disable personalized search results
-    if "google.com" in url:
-        # Construct search URL directly for speed and accuracy
-        # &num=100 lets us see more results on one page if needed
-        driver.get(f"https://www.google.com/search?q={searchPhrase.replace(' ', '+')}&pws=0")
-    elif "bing.com" in url:
-        driver.get(f"https://www.bing.com/search?q={searchPhrase.replace(' ', '+')}")
-    else:
-        driver.get(url)
-        try:
-            entryField = WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.NAME, "q"))
-            )
-            entryField.clear()
-            entryField.send_keys(searchPhrase)
-            entryField.send_keys(Keys.RETURN)
-        except Exception as e:
-            print(f"Error finding search field on {url}: {e}")
-            raise
-
 def run_rank_tracker(search_engines, search_phrases, requestedSearchDomain):
     chrome_options = Options()
     is_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER') == 'true'
@@ -82,63 +61,58 @@ def run_rank_tracker(search_engines, search_phrases, requestedSearchDomain):
             engine_results = []
             
             for searchPhrase in search_phrases:
-                print(f"\n[Deep Scan] '{searchPhrase}' on {engine_key}...")
+                print(f"\n[Accuracy Scan] '{searchPhrase}' on {engine_key}...")
                 current_rank = 1
                 found = False
 
                 for page in range(1, MAX_PAGES + 1):
-                    # Direct Navigation Logic
-                    if page == 1:
-                        search_internal(driver, f"https://www.{engine_key}.com", searchPhrase)
-                    else:
-                        try:
-                            if engine_key == 'google':
-                                driver.find_element(By.ID, "pnnext").click()
-                            elif engine_key == 'bing':
-                                driver.find_element(By.CSS_SELECTOR, "a.sb_pagN").click()
-                            elif engine_key == 'duckduckgo':
-                                driver.find_element(By.ID, "more-results").click()
-                            time.sleep(2)
-                        except: break
-
-                    # MULTI-SELECTOR LOGIC (Handles changing search engine layouts)
+                    # Construct URL directly to avoid search field timing issues
                     if engine_key == 'google':
-                        # Try finding containers first (most accurate), then fallback to all results
-                        container_selector = "div.MjjYud, div.g, div.tF2Cxc"
-                        link_sub_selector = "a[data-ved], div.yuRUbf a, h3 a"
+                        start = (page - 1) * 10
+                        url = f"https://www.google.com/search?q={searchPhrase.replace(' ', '+')}&pws=0&start={start}"
+                        header_selector = "h3"
                     elif engine_key == 'bing':
-                        container_selector = "li.b_algo, .b_algo"
-                        link_sub_selector = "h2 a"
+                        first = (page - 1) * 10 + 1
+                        url = f"https://www.bing.com/search?q={searchPhrase.replace(' ', '+')}&first={first}"
+                        header_selector = "h2"
                     else: # DuckDuckGo
-                        container_selector = "article[data-testid='result']"
-                        link_sub_selector = "h2 a"
+                        url = f"https://duckduckgo.com/?q={searchPhrase.replace(' ', '+')}"
+                        header_selector = "h2"
+                    
+                    driver.get(url)
+                    time.sleep(2) # Allow results to load
 
                     try:
-                        # Short wait for any of the containers
-                        WebDriverWait(driver, 8).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, container_selector))
+                        WebDriverWait(driver, 10).until(
+                            EC.presence_of_element_located((By.TAG_NAME, header_selector))
                         )
-                        containers = driver.find_elements(By.CSS_SELECTOR, container_selector)
+                        # Find all headers - these represent unique organic results
+                        headers = driver.find_elements(By.TAG_NAME, header_selector)
                         
-                        for container in containers:
+                        for header in headers:
                             try:
-                                # Find the first real rank link
-                                links = container.find_elements(By.CSS_SELECTOR, link_sub_selector)
-                                if not links:
-                                    # Very last fallback: any link inside the container
-                                    links = container.find_elements(By.TAG_NAME, "a")
+                                # Get the nearest link to this header
+                                # We look for 'a' either in the header or in its parent/ancestor
+                                link_element = None
+                                try:
+                                    link_element = header.find_element(By.XPATH, "./ancestor::a")
+                                except:
+                                    try:
+                                        link_element = header.find_element(By.XPATH, ".//a")
+                                    except:
+                                        # Fallback to parent's first link
+                                        try:
+                                            link_element = header.find_element(By.XPATH, "..//a")
+                                        except:
+                                            continue
                                 
-                                correct_link = None
-                                for l in links:
-                                    h = l.get_attribute("href")
-                                    # Filter out internal engine links (cache, translate, etc)
-                                    if h and "google.com" not in h and "search?" not in h and "#" not in h:
-                                        correct_link = h
-                                        break
+                                if not link_element: continue
                                 
-                                if not correct_link: continue
+                                href = link_element.get_attribute("href")
+                                if not href or any(x in href for x in ["google.com", "bing.com", "search?", "cache:", "translate.google"]):
+                                    continue
                                 
-                                link_domain = normalize_domain(correct_link)
+                                link_domain = normalize_domain(href)
                                 print(f"  Rank {current_rank}: {link_domain}")
 
                                 if requestedSearchDomain in link_domain:
@@ -146,10 +120,13 @@ def run_rank_tracker(search_engines, search_phrases, requestedSearchDomain):
                                     found = True
                                     print(f"  >> TARGET FOUND AT RANK {current_rank} <<")
                                     break
+                                
                                 current_rank += 1
-                            except: continue
-                    except Exception as e:
-                        print(f"    Page {page} scan failed or no results found.")
+                                if current_rank > 100: break
+                            except:
+                                continue
+                    except:
+                        print(f"    Page {page} timeout or no results.")
                         break
                     
                     if found: break
@@ -161,7 +138,7 @@ def run_rank_tracker(search_engines, search_phrases, requestedSearchDomain):
             if engine_key == 'duckduckgo': display_name = "DuckDuckGo"
             results[display_name] = engine_results
 
-        # CSV Saving remains the same...
+        # CSV Saving
         timestamp = int(time.time())
         file_name = f"results_{timestamp}.csv"
         downloads_dir = os.path.join(os.getcwd(), "downloads")
